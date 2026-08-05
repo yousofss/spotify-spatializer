@@ -83,3 +83,8 @@ video, Apple Music) since their audio would be processed twice.
 - `Sources/` – menu bar app and the convolution engine
 - `Tools/` – `make-sweep`, `record-tap`, `extract-ir` measurement pipeline
 - `build.sh` – builds the app bundle and tools
+
+---
+
+This project is fully vibecoded. It works great on my machine, but if something breaks on
+yours or you see room for improvement, PRs are very welcome.
