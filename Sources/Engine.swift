@@ -109,9 +109,18 @@ final class Spatializer {
     private(set) var peak: Float = 0
     var isRunning: Bool { procID != nil }
 
-    static func audioProcesses(bundleID: String) -> [AudioObjectID] {
+    static func audioProcesses(bundleIDs: [String]) -> [AudioObjectID] {
         objectIDs(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
-            .filter { stringProp($0, kAudioProcessPropertyBundleID) == bundleID }
+            .filter { bundleIDs.contains(stringProp($0, kAudioProcessPropertyBundleID) ?? "") }
+    }
+
+    /// Bundle IDs of every app currently registered with the audio HAL.
+    static func runningAudioBundleIDs() -> [String] {
+        var seen = Set<String>()
+        for p in objectIDs(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList) {
+            if let b = stringProp(p, kAudioProcessPropertyBundleID), !b.isEmpty { seen.insert(b) }
+        }
+        return Array(seen)
     }
 
     init(irData: Data) throws {
@@ -301,12 +310,12 @@ final class Spatializer {
         return noErr
     }
 
-    func start(bundleID: String) throws {
+    func start(bundleIDs: [String]) throws {
         stop()
         do {
-            let processes = Self.audioProcesses(bundleID: bundleID)
+            let processes = Self.audioProcesses(bundleIDs: bundleIDs)
             guard !processes.isEmpty else {
-                throw SpatializerError(message: "\(bundleID) has no audio yet (play something once)")
+                throw SpatializerError(message: "no target app is playing audio yet")
             }
 
             let tapDesc = CATapDescription(stereoMixdownOfProcesses: processes)

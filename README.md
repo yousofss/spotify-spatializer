@@ -66,17 +66,17 @@ loudness captured at a different volume.
 
 ## Use
 
-Launch the app; an AirPods icon appears in the menu bar. It automatically attaches to Spotify
-whenever Spotify is playing and follows output device changes. Keep the system's own
+Launch the app; an AirPods icon appears in the menu bar. It automatically attaches to the
+target apps whenever they play audio and follows output device changes. Keep the system's own
 Spatialize Stereo setting Off while using it (the processing is already in the IRs).
 
-The menu shows current status and offers Pause/Resume, IR import, and Quit.
+The menu shows current status and offers Pause/Resume, a Target Apps picker, IR import, and
+Quit. Target Apps lists every app currently registered for audio; check as many as you like
+(Spotify is the default). Anything they play gets spatialized: Spotify, YouTube in Firefox,
+games, whatever.
 
-To spatialize a different app:
-
-```
-defaults write com.yousofshahrabi.spatialize targetBundleID com.some.app
-```
+Avoid targeting apps that already receive Apple's spatialization (Safari or QuickTime playing
+video, Apple Music) since their audio would be processed twice.
 
 ## Repository layout
 

@@ -11,7 +11,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var enabled = true
     private var restartPending = false
 
-    private let bundleID = UserDefaults.standard.string(forKey: "targetBundleID") ?? "com.spotify.client"
+    private var targetIDs: [String] = {
+        let d = UserDefaults.standard
+        if let list = d.stringArray(forKey: "targetBundleIDs"), !list.isEmpty { return list }
+        if let single = d.string(forKey: "targetBundleID") { return [single] }
+        return ["com.spotify.client"]
+    }() {
+        didSet { UserDefaults.standard.set(targetIDs, forKey: "targetBundleIDs") }
+    }
     private let supportDir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Spatialize")
@@ -65,9 +72,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tryStart() {
-        guard enabled, let engine, !engine.isRunning else { return }
+        guard enabled, let engine, !engine.isRunning, !targetIDs.isEmpty else { return }
         do {
-            try engine.start(bundleID: bundleID)
+            try engine.start(bundleIDs: targetIDs)
             engineError = nil
         } catch {
             engineError = error.localizedDescription
@@ -87,8 +94,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func tick() {
         guard enabled, !restartPending else { return }
         if let engine, engine.isRunning {
-            // Spotify relaunches get fresh HAL process objects; the old tap goes deaf.
-            if Spatializer.audioProcesses(bundleID: bundleID) != engine.tappedProcesses {
+            // App relaunches get fresh HAL process objects, and newly started target
+            // apps need to be folded into the tap; both show up as a set difference.
+            if Spatializer.audioProcesses(bundleIDs: targetIDs) != engine.tappedProcesses {
                 scheduleRestart()
             }
         } else {
@@ -103,11 +111,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let status: String
         if let engine, engine.isRunning {
-            status = "Spatializing \(appName()) → \(engine.deviceName)"
+            status = "Spatializing \(targetNames()) → \(engine.deviceName)"
         } else if !enabled {
             status = "Paused"
+        } else if targetIDs.isEmpty {
+            status = "No target apps selected"
         } else {
-            status = engineError ?? "Waiting for \(appName())…"
+            status = engineError ?? "Waiting for \(targetNames())…"
         }
         let statusLine = NSMenuItem(title: status, action: nil, keyEquivalent: "")
         statusLine.isEnabled = false
@@ -119,6 +129,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         menu.addItem(toggle)
 
+        let targets = NSMenuItem(title: "Target Apps", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let candidates = Set(Spatializer.runningAudioBundleIDs()).union(targetIDs)
+            .filter { $0 != Bundle.main.bundleIdentifier && !$0.hasPrefix("com.apple.audio") }
+        let entries = candidates
+            .map { (id: $0, name: displayName($0)) }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+        for entry in entries {
+            let item = NSMenuItem(title: entry.name, action: #selector(toggleTarget(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.id
+            item.state = targetIDs.contains(entry.id) ? .on : .off
+            sub.addItem(item)
+        }
+        if entries.isEmpty {
+            let none = NSMenuItem(title: "No audio apps detected", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            sub.addItem(none)
+        }
+        targets.submenu = sub
+        menu.addItem(targets)
+
         let importItem = NSMenuItem(title: "Import IR File…", action: #selector(importIR), keyEquivalent: "")
         importItem.target = self
         menu.addItem(importItem)
@@ -128,8 +160,27 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quit)
     }
 
-    private func appName() -> String {
-        bundleID == "com.spotify.client" ? "Spotify" : bundleID
+    private func displayName(_ bundleID: String) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName
+            ?? (bundleID == "com.spotify.client" ? "Spotify" : bundleID)
+    }
+
+    private func targetNames() -> String {
+        targetIDs.map(displayName).joined(separator: ", ")
+    }
+
+    @objc private func toggleTarget(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        if let idx = targetIDs.firstIndex(of: id) {
+            targetIDs.remove(at: idx)
+        } else {
+            targetIDs.append(id)
+        }
+        if targetIDs.isEmpty {
+            engine?.stop()
+        } else {
+            scheduleRestart()
+        }
     }
 
     @objc private func toggleEnabled() {
