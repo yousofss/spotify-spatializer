@@ -70,7 +70,7 @@ final class Spatializer {
     let irLen: Int
     private let P: Int
     private let fft: FFTSetup
-    private let calNorm: Float
+    private var calNorm: Float = 1
     private var hRe: [UnsafeMutablePointer<Float>] = []  // 4 paths: LL, LR, RL, RR
     private var hIm: [UnsafeMutablePointer<Float>] = []
 
@@ -105,8 +105,6 @@ final class Spatializer {
     private var procID: AudioDeviceIOProcID?
     private(set) var tappedProcesses: [AudioObjectID] = []
     private(set) var deviceName = ""
-    private(set) var framesRendered: UInt64 = 0
-    private(set) var peak: Float = 0
     var isRunning: Bool { procID != nil }
 
     static func audioProcesses(bundleIDs: [String]) -> [AudioObjectID] {
@@ -152,7 +150,6 @@ final class Spatializer {
         let zero = alloc(B)
         let padded = alloc(B)
         defer { zero.deallocate(); padded.deallocate() }
-        calNorm = try Self.calibrate(fft: fft, log2F: log2F, B: B, halfF: halfF, scratch: fftScratch, zero: zero)
         for path in 0..<4 {
             let re = alloc(P * halfF), im = alloc(P * halfF)
             for p in 0..<P {
@@ -167,43 +164,23 @@ final class Spatializer {
             hRe.append(re)
             hIm.append(im)
         }
-    }
 
-    // δ input through δ IR must give back δ; whatever it gives instead is the vDSP
-    // scale convention, folded into every block via `calNorm`.
-    private static func calibrate(fft: FFTSetup, log2F: vDSP_Length, B: Int, halfF: Int,
-                                  scratch: UnsafeMutablePointer<Float>,
-                                  zero: UnsafePointer<Float>) throws -> Float {
-        func fwd(_ a: UnsafePointer<Float>, _ b: UnsafePointer<Float>,
-                 _ re: UnsafeMutablePointer<Float>, _ im: UnsafeMutablePointer<Float>) {
-            memcpy(scratch, a, B * 4)
-            memcpy(scratch + B, b, B * 4)
-            var split = DSPSplitComplex(realp: re, imagp: im)
-            scratch.withMemoryRebound(to: DSPComplex.self, capacity: halfF) {
-                vDSP_ctoz($0, 2, &split, 1, vDSP_Length(halfF))
-            }
-            vDSP_fft_zrip(fft, &split, 1, log2F, FFTDirection(FFT_FORWARD))
-        }
-        let imp = alloc(B), dRe = alloc(halfF), dIm = alloc(halfF)
-        let xr = alloc(halfF), xi = alloc(halfF), aRe = alloc(halfF), aIm = alloc(halfF)
-        defer { [imp, dRe, dIm, xr, xi, aRe, aIm].forEach { $0.deallocate() } }
-        imp[0] = 1
-        fwd(imp, zero, dRe, dIm)
-        fwd(zero, imp, xr, xi)
-        aRe[0] = xr[0] * dRe[0]
-        aIm[0] = xi[0] * dIm[0]
-        for k in 1..<halfF {
-            aRe[k] = xr[k] * dRe[k] - xi[k] * dIm[k]
-            aIm[k] = xr[k] * dIm[k] + xi[k] * dRe[k]
-        }
-        var split = DSPSplitComplex(realp: aRe, imagp: aIm)
-        vDSP_fft_zrip(fft, &split, 1, log2F, FFTDirection(FFT_INVERSE))
-        scratch.withMemoryRebound(to: DSPComplex.self, capacity: halfF) {
-            vDSP_ztoc(&split, 1, $0, 2, vDSP_Length(halfF))
-        }
-        let v = scratch[B]
-        guard v != 0 else { throw SpatializerError(message: "engine calibration failed") }
-        return 1 / v
+        // Calibrate the vDSP scale convention with the normal block pipeline: δ input
+        // through a δ IR must give back δ; the deviation becomes `calNorm` (1 so far,
+        // so `inv` below is unscaled).
+        memset(padded, 0, B * 4)
+        padded[0] = 1
+        let dRe = alloc(halfF), dIm = alloc(halfF)
+        let xr = alloc(halfF), xi = alloc(halfF)
+        defer { [dRe, dIm, xr, xi].forEach { $0.deallocate() } }
+        fwd(padded, zero, dRe, dIm)  // δ "IR" partition: [h | 0]
+        fwd(zero, padded, xr, xi)    // δ input frame: [prev | cur]
+        memset(accRe[0], 0, halfF * 4)
+        memset(accIm[0], 0, halfF * 4)
+        mac(xr, xi, dRe, dIm, accRe[0], accIm[0])
+        inv(accRe[0], accIm[0], outBlockL)
+        guard outBlockL[0] != 0 else { throw SpatializerError(message: "engine calibration failed") }
+        calNorm = 1 / outBlockL[0]
     }
 
     private func fwd(_ first: UnsafePointer<Float>, _ second: UnsafePointer<Float>,
@@ -300,13 +277,6 @@ final class Spatializer {
             deviceBuffer[2 * i + 1] = has ? outR[outRd & fifoMask] : 0
             if has { outRd += 1 }
         }
-
-        framesRendered += UInt64(outFrames)
-        if peak == 0 {
-            var m: Float = 0
-            vDSP_maxmgv(deviceBuffer, 1, &m, vDSP_Length(outFrames * 2))
-            peak = m
-        }
         return noErr
     }
 
@@ -380,7 +350,6 @@ final class Spatializer {
             head = 0
             inW = 0; inRd = 0
             outW = B; outRd = 0  // one block of pre-roll silence
-            framesRendered = 0; peak = 0
 
             var pid: AudioDeviceIOProcID?
             try check(AudioDeviceCreateIOProcID(aggregate, ioProc, Unmanaged.passUnretained(self).toOpaque(), &pid),

@@ -35,8 +35,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loadEngine()
         tryStart()
 
-        // Keep-alive: reattach when Spotify (re)appears or its HAL processes change.
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.tick() }
+        // Keep-alive: reattach when target apps (re)appear or their HAL processes change.
+        // .common mode so it keeps firing while the status menu is open.
+        let keepAlive = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(keepAlive, forMode: .common)
 
         // Rebuild when the default output device changes (e.g. AirPods connect).
         var defAddr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
