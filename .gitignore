@@ -1,0 +1,5 @@
+build/
+irs.bin
+*.wav
+sweep.mov
+.DS_Store
