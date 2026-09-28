@@ -1,13 +1,24 @@
 #!/bin/bash
-# Builds build/Spatialize.app (menu bar app).
+# Builds build/Spatialize.app (menu bar app), universal and runnable back to the
+# Info.plist minimum. The version comes from $VERSION (the release tag, e.g. v1.2.0),
+# falling back to the latest git tag.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP=build/Spatialize.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O Sources/*.swift -o "$APP/Contents/MacOS/Spatialize"
+MIN=$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' Info.plist)
+for arch in arm64 x86_64; do
+    swiftc -O -target "$arch-apple-macos$MIN" Sources/*.swift -o "build/Spatialize-$arch"
+done
+lipo -create build/Spatialize-arm64 build/Spatialize-x86_64 -output "$APP/Contents/MacOS/Spatialize"
+
 cp Info.plist "$APP/Contents/Info.plist"
+VERSION=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo v1.0)}
+VERSION=${VERSION#v}
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+                        -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 
 ICONSET=build/AppIcon.iconset
 mkdir -p "$ICONSET"
@@ -23,4 +34,4 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 # Ad-hoc signature so the audio-capture permission sticks between launches
 codesign --force --sign - "$APP"
 
-echo "built $APP"
+echo "built $APP $VERSION"

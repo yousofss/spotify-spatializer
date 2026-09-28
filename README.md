@@ -28,13 +28,22 @@ own processing.
   output device; use the same device for playback)
 - 48 kHz output (the default for AirPods)
 
+## Install
+
+Download the latest `Spatialize-vX.Y.Z.zip` from
+[Releases](https://github.com/yousofss/spotify-spatializer/releases/latest), unzip it, and move
+`Spatialize.app` to Applications. The app isn't notarized, so macOS blocks the first launch:
+open System Settings → Privacy & Security and click Open Anyway.
+
 ## Build
 
 ```
 ./build.sh
 ```
 
-Produces `build/Spatialize.app`.
+Produces a universal `build/Spatialize.app`. To publish a release, push a version tag
+(`git tag v1.1.0 && git push origin v1.1.0`); GitHub Actions builds the app and attaches it to a
+new release.
 
 ## Measure (one-time, about a minute)
 
@@ -72,6 +81,7 @@ video, Apple Music) since their audio would be processed twice.
 - `Sources/`: menu bar app, convolution engine, and measurement
 - `Tests/`: round-trip check for the IR extraction
 - `build.sh`: builds the app bundle
+- `.github/workflows/build.yml`: builds every push, publishes a release for each `v*` tag
 
 ---
 

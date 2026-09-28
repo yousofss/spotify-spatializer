@@ -1,0 +1,33 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check IR extraction
+        run: |
+          swiftc -O -parse-as-library Sources/Engine.swift Sources/Measure.swift Tests/extract-check.swift -o extract-check
+          ./extract-check
+
+      - name: Build
+        run: ./build.sh
+        env:
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ditto -c -k --keepParent build/Spatialize.app "Spatialize-$GITHUB_REF_NAME.zip"
+          gh release create "$GITHUB_REF_NAME" "Spatialize-$GITHUB_REF_NAME.zip" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
