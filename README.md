@@ -1,3 +1,5 @@
+<img src="AppIcon.svg" width="128" alt="Spatialize app icon">
+
 # Spatialize
 
 Apple-quality Spatial Audio (Fixed mode) for Spotify on macOS.
