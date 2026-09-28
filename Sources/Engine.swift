@@ -1,5 +1,5 @@
 // Engine.swift — real-time spatializer: process tap + partitioned FFT convolution with
-// impulse responses measured from Apple's own Fixed-mode spatializer (see Tools/).
+// impulse responses measured from Apple's own Fixed-mode spatializer (see Measure.swift).
 
 import Accelerate
 import AudioToolbox
@@ -11,11 +11,11 @@ struct SpatializerError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-private func check(_ status: OSStatus, _ what: String) throws {
+func check(_ status: OSStatus, _ what: String) throws {
     if status != noErr { throw SpatializerError(message: "\(what) (OSStatus \(status))") }
 }
 
-private func addr(_ sel: AudioObjectPropertySelector,
+func addr(_ sel: AudioObjectPropertySelector,
                   _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress(mSelector: sel, mScope: scope, mElement: kAudioObjectPropertyElementMain)
 }
@@ -61,7 +61,31 @@ func moveDefaultInputOffBluetooth() -> Bool {
     return AudioObjectSetPropertyData(system, &a, 0, nil, UInt32(MemoryLayout<AudioObjectID>.size), &builtIn) == noErr
 }
 
-private func streamFormat(_ dev: AudioObjectID, _ scope: AudioObjectPropertyScope) -> AudioStreamBasicDescription? {
+/// Private aggregate on the default output device with the tap as its input.
+func createTapAggregate(tap: UUID) throws -> (aggregate: AudioObjectID, output: AudioObjectID) {
+    guard let output = uint32Prop(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice),
+          let outUID = stringProp(output, kAudioDevicePropertyDeviceUID) else {
+        throw SpatializerError(message: "no output device")
+    }
+    let desc: [String: Any] = [
+        kAudioAggregateDeviceNameKey: "Spatialize",
+        kAudioAggregateDeviceUIDKey: UUID().uuidString,
+        kAudioAggregateDeviceMainSubDeviceKey: outUID,
+        kAudioAggregateDeviceIsPrivateKey: true,
+        kAudioAggregateDeviceIsStackedKey: false,
+        kAudioAggregateDeviceTapAutoStartKey: true,
+        kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outUID]],
+        kAudioAggregateDeviceTapListKey: [[
+            kAudioSubTapDriftCompensationKey: true,
+            kAudioSubTapUIDKey: tap.uuidString,
+        ]],
+    ]
+    var aggregate = AudioObjectID(kAudioObjectUnknown)
+    try check(AudioHardwareCreateAggregateDevice(desc as CFDictionary, &aggregate), "create aggregate device")
+    return (aggregate, output)
+}
+
+func streamFormat(_ dev: AudioObjectID, _ scope: AudioObjectPropertyScope) -> AudioStreamBasicDescription? {
     guard let stream = objectIDs(dev, kAudioDevicePropertyStreams, scope).first else { return nil }
     var a = addr(kAudioStreamPropertyVirtualFormat)
     var fmt = AudioStreamBasicDescription()
@@ -318,30 +342,7 @@ final class Spatializer {
             try check(AudioHardwareCreateProcessTap(tapDesc, &tap), "create process tap")
             tapID = tap
 
-            let system = AudioObjectID(kAudioObjectSystemObject)
-            var defaultOut = AudioObjectID(kAudioObjectUnknown)
-            var outAddr = addr(kAudioHardwarePropertyDefaultOutputDevice)
-            var outSize = UInt32(MemoryLayout<AudioObjectID>.size)
-            try check(AudioObjectGetPropertyData(system, &outAddr, 0, nil, &outSize, &defaultOut), "get default output")
-            guard let outUID = stringProp(defaultOut, kAudioDevicePropertyDeviceUID) else {
-                throw SpatializerError(message: "output device has no UID")
-            }
-
-            let desc: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "Spatialize",
-                kAudioAggregateDeviceUIDKey: UUID().uuidString,
-                kAudioAggregateDeviceMainSubDeviceKey: outUID,
-                kAudioAggregateDeviceIsPrivateKey: true,
-                kAudioAggregateDeviceIsStackedKey: false,
-                kAudioAggregateDeviceTapAutoStartKey: true,
-                kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outUID]],
-                kAudioAggregateDeviceTapListKey: [[
-                    kAudioSubTapDriftCompensationKey: true,
-                    kAudioSubTapUIDKey: tapDesc.uuid.uuidString,
-                ]],
-            ]
-            var agg = AudioObjectID(kAudioObjectUnknown)
-            try check(AudioHardwareCreateAggregateDevice(desc as CFDictionary, &agg), "create aggregate device")
+            let (agg, defaultOut) = try createTapAggregate(tap: tapDesc.uuid)
             aggregate = agg
 
             var frames = UInt32(B)
@@ -380,7 +381,7 @@ final class Spatializer {
             try check(AudioDeviceStart(aggregate, pid), "start device")
 
             tappedProcesses = processes
-            deviceName = stringProp(defaultOut, kAudioObjectPropertyName) ?? outUID
+            deviceName = stringProp(defaultOut, kAudioObjectPropertyName) ?? "output device"
         } catch {
             stop()
             throw error

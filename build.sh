@@ -1,12 +1,12 @@
 #!/bin/bash
-# Builds build/Spatialize.app (menu bar app) and the measurement tools in build/tools.
+# Builds build/Spatialize.app (menu bar app).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP=build/Spatialize.app
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/tools
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O Sources/Engine.swift Sources/main.swift -o "$APP/Contents/MacOS/Spatialize"
+swiftc -O Sources/*.swift -o "$APP/Contents/MacOS/Spatialize"
 cp Info.plist "$APP/Contents/Info.plist"
 
 ICONSET=build/AppIcon.iconset
@@ -20,11 +20,7 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 # Bundle an IR file if one sits next to this script (optional; personal, not in git)
 [ -f irs.bin ] && cp irs.bin "$APP/Contents/Resources/irs.bin"
 
-for tool in make-sweep record-tap extract-ir; do
-    swiftc -O "Tools/$tool.swift" -o "build/tools/$tool"
-done
-
 # Ad-hoc signature so the audio-capture permission sticks between launches
 codesign --force --sign - "$APP"
 
-echo "built $APP and build/tools/{make-sweep,record-tap,extract-ir}"
+echo "built $APP"

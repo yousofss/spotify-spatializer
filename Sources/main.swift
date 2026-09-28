@@ -10,6 +10,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var engineError: String?
     private var enabled = true
     private var restartPending = false
+    private var measuring = false
 
     private var targetIDs: [String] = {
         let d = UserDefaults.standard
@@ -59,6 +60,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.enforceBuiltInMic()
         }
         enforceBuiltInMic()
+
+        if engine == nil { measure() }
     }
 
     private func enforceBuiltInMic() {
@@ -79,7 +82,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? irURL
             : Bundle.main.url(forResource: "irs", withExtension: "bin")
         guard let url, let data = try? Data(contentsOf: url) else {
-            engineError = "No IR file. Use “Import IR File…” (see README to measure one)."
+            engineError = "Not measured yet"
             return
         }
         do {
@@ -91,7 +94,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tryStart() {
-        guard enabled, let engine, !engine.isRunning, !targetIDs.isEmpty else { return }
+        guard enabled, !measuring, let engine, !engine.isRunning, !targetIDs.isEmpty else { return }
         do {
             try engine.start(bundleIDs: targetIDs)
             engineError = nil
@@ -129,7 +132,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         let status: String
-        if let engine, engine.isRunning {
+        if measuring {
+            status = "Measuring…"
+        } else if let engine, engine.isRunning {
             status = "Spatializing \(targetNames()) → \(engine.deviceName)"
         } else if !enabled {
             status = "Paused"
@@ -175,9 +180,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mic.state = useBuiltInMic ? .on : .off
         menu.addItem(mic)
 
-        let importItem = NSMenuItem(title: "Import IR File…", action: #selector(importIR), keyEquivalent: "")
-        importItem.target = self
-        menu.addItem(importItem)
+        let measureItem = NSMenuItem(title: "Measure Spatial Audio…", action: #selector(measure), keyEquivalent: "")
+        measureItem.target = self
+        menu.addItem(measureItem)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Spatialize", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -221,24 +226,90 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enforceBuiltInMic()
     }
 
-    @objc private func importIR() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose an irs.bin produced by extract-ir"
-        guard panel.runModal() == .OK, let src = panel.url else { return }
-        do {
-            try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: irURL.path) {
-                try FileManager.default.removeItem(at: irURL)
-            }
-            try FileManager.default.copyItem(at: src, to: irURL)
-            loadEngine()
+    @objc private func measure() {
+        Task { @MainActor in await runMeasurement() }
+    }
+
+    @MainActor private func runMeasurement() async {
+        guard !measuring else { return }
+        measuring = true
+        engine?.stop()
+        defer {
+            measuring = false
             tryStart()
+        }
+
+        let movie = FileManager.default.temporaryDirectory.appendingPathComponent("spatialize-sweep.mov")
+        do {
+            try await Task.detached { try writeSweepMovie(to: movie) }.value
         } catch {
-            engineError = "Import failed: \(error.localizedDescription)"
+            return showMeasurementError(error)
+        }
+        // Playing makes Spatialize Stereo show up for this app in Control Center; the throwaway
+        // tap raises the audio-capture permission prompt now instead of mid-measurement.
+        let setup = try? launchSweepPlayer(movie, ["--setup"])
+        _ = try? ProcessRecorder(audioProcess(pid: getpid()), frames: 1)
+        let alert = NSAlert()
+        alert.messageText = "Set Spatialize Stereo to Fixed"
+        alert.informativeText = "Put your AirPods on and pause other audio. While this test sound plays, open Control Center → Sound and set Spatialize Stereo to Fixed for your AirPods."
+        alert.addButton(withTitle: "Measure")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        let proceed = alert.runModal() == .alertFirstButtonReturn
+        setup?.terminate()
+        guard proceed else { return }
+
+        do {
+            let progress = showProgress(seconds: 2 + 2 * (passSeconds + 0.5))
+            defer { progress.close() }
+            try await Task.sleep(for: .seconds(2))  // switching the mode briefly reconfigures the output
+            let fixed = try await recordPass(movie: movie, spatialize: true)
+            let off = try await recordPass(movie: movie, spatialize: false)
+            let irs = try extractIR(fixed: fixed, off: off)
+            try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            try irs.write(to: irURL)
+            loadEngine()
+            NSSound(named: "Glass")?.play()  // the passes are silent, so mark the end
+        } catch {
+            showMeasurementError(error)
         }
     }
+
+    /// Time-based, since the passes are silent and run a fixed length.
+    private func showProgress(seconds: Double) -> NSWindow {
+        let bar = NSProgressIndicator(frame: NSRect(x: 20, y: 20, width: 300, height: 20))
+        bar.isIndeterminate = false
+        bar.maxValue = seconds
+        bar.setAccessibilityLabel("Measuring Spatial Audio")
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 60),
+                            styleMask: .titled, backing: .buffered, defer: false)
+        panel.title = "Measuring Spatial Audio"
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false  // panels hide by default once focus returns to another app
+        panel.level = .floating
+        panel.contentView?.addSubview(bar)
+        panel.center()
+        panel.orderFrontRegardless()
+        let start = Date()
+        let ticker = Timer(timeInterval: 0.2, repeats: true) { [weak panel] timer in
+            guard let panel, panel.isVisible else { return timer.invalidate() }
+            bar.doubleValue = Date().timeIntervalSince(start)
+        }
+        RunLoop.main.add(ticker, forMode: .common)
+        return panel
+    }
+
+    private func showMeasurementError(_ error: Error) {
+        let failed = NSAlert()
+        failed.messageText = "Measurement failed"
+        failed.informativeText = error.localizedDescription
+        NSApp.activate()
+        failed.runModal()
+    }
+}
+
+if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--play-sweep" {
+    runSweepPlayer(Array(CommandLine.arguments.dropFirst(2)))
 }
 
 let app = NSApplication.shared

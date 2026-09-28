@@ -9,8 +9,8 @@ macOS only spatializes audio from Apple's media frameworks, so Spotify never get
 measuring what Apple's spatializer actually does and applying the exact same processing to
 Spotify in real time:
 
-1. A tiny video file with sine sweeps is played in QuickTime, where macOS applies its real
-   spatializer (Apple's render runs inside the playing app's process).
+1. Spatialize plays sine sweeps through Apple's own media renderer, where macOS applies its
+   real spatializer (Apple's render runs inside the playing app's process).
 2. A Core Audio process tap records the spatialized output, and the sweeps are deconvolved
    into the four impulse responses of the render: L→L, L→R, R→L, R→R. These include
    everything: the binaural room responses, Apple's private tuning stages, and your
@@ -34,46 +34,29 @@ own processing.
 ./build.sh
 ```
 
-Produces `build/Spatialize.app` and the measurement tools in `build/tools/`.
+Produces `build/Spatialize.app`.
 
-## Measure your impulse responses (one-time, ~2 minutes)
+## Measure (one-time, about a minute)
 
-Your `irs.bin` is personal: it bakes in your Personalized Spatial Audio profile and the
-loudness curve at your listening volume. Make it on your own machine:
+The measurement is personal: it bakes in your Personalized Spatial Audio profile and the
+loudness curve at your listening volume. On first launch Spatialize walks you through it:
 
-```bash
-cd build/tools
-./make-sweep                    # writes sweep.mov
+1. Put your AirPods on and pause other audio.
+2. While Spatialize plays a test sound, open Control Center → Sound and set Spatialize Stereo
+   to Fixed for your AirPods, then click Measure.
+3. Spatialize measures silently for about 40 seconds, chimes, and starts using the result.
 
-# 1. Connect your AirPods, open sweep.mov, press play briefly,
-#    and set Control Center → Sound → AirPods → Spatialize Stereo → Fixed.
-open sweep.mov
-
-# 2. Record the spatialized pass:
-./record-tap com.apple.QuickTimePlayerX fixed.wav 18 & sleep 1; \
-osascript -e 'tell application "QuickTime Player"' \
-          -e 'set current time of document 1 to 0' -e 'play document 1' -e 'end tell'; wait
-
-# 3. Set Spatialize Stereo → Off, then record the reference pass:
-./record-tap com.apple.QuickTimePlayerX off.wav 18 & sleep 1; \
-osascript -e 'tell application "QuickTime Player"' \
-          -e 'set current time of document 1 to 0' -e 'play document 1' -e 'end tell'; wait
-
-./extract-ir fixed.wav off.wav irs.bin
-```
-
-Then launch Spatialize.app and use "Import IR File…" to load `irs.bin`. Re-measure if you
-change your Personalized Spatial Audio profile, after major macOS updates, or if you want the
-loudness captured at a different volume.
+Re-measure with "Measure Spatial Audio…" in the menu if you change your Personalized Spatial
+Audio profile, after major macOS updates, or to capture the loudness at a different volume.
 
 ## Use
 
 Launch the app; an AirPods icon appears in the menu bar. It automatically attaches to the
 target apps whenever they play audio and follows output device changes. Keep the system's own
-Spatialize Stereo setting Off while using it (the processing is already in the IRs).
+Spatialize Stereo setting Off for the target apps (the processing is already in the IRs).
 
 The menu shows current status and offers Pause/Resume, a Target Apps picker, Use Built-in Mic,
-IR import, and Quit. Target Apps lists every app currently registered for audio; check as many as you like
+Measure Spatial Audio…, and Quit. Target Apps lists every app currently registered for audio; check as many as you like
 (Spotify is the default). Anything they play gets spatialized: Spotify, YouTube in Firefox,
 games, whatever.
 
@@ -86,9 +69,9 @@ video, Apple Music) since their audio would be processed twice.
 
 ## Repository layout
 
-- `Sources/` – menu bar app and the convolution engine
-- `Tools/` – `make-sweep`, `record-tap`, `extract-ir` measurement pipeline
-- `build.sh` – builds the app bundle and tools
+- `Sources/`: menu bar app, convolution engine, and measurement
+- `Tests/`: round-trip check for the IR extraction
+- `build.sh`: builds the app bundle
 
 ---
 
