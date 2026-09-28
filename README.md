@@ -70,10 +70,14 @@ Launch the app; an AirPods icon appears in the menu bar. It automatically attach
 target apps whenever they play audio and follows output device changes. Keep the system's own
 Spatialize Stereo setting Off while using it (the processing is already in the IRs).
 
-The menu shows current status and offers Pause/Resume, a Target Apps picker, IR import, and
-Quit. Target Apps lists every app currently registered for audio; check as many as you like
+The menu shows current status and offers Pause/Resume, a Target Apps picker, Use Built-in Mic,
+IR import, and Quit. Target Apps lists every app currently registered for audio; check as many as you like
 (Spotify is the default). Anything they play gets spatialized: Spotify, YouTube in Firefox,
 games, whatever.
+
+Use Built-in Mic (on by default) switches the input back to the Mac's microphone whenever macOS
+picks the AirPods mic, since that forces the AirPods into low-quality call mode. Turn it off to
+take calls on the AirPods mic.
 
 Avoid targeting apps that already receive Apple's spatialization (Safari or QuickTime playing
 video, Apple Music) since their audio would be processed twice.

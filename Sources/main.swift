@@ -19,6 +19,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }() {
         didSet { UserDefaults.standard.set(targetIDs, forKey: "targetBundleIDs") }
     }
+    private var useBuiltInMic = UserDefaults.standard.object(forKey: "useBuiltInMic") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(useBuiltInMic, forKey: "useBuiltInMic") }
+    }
     private let supportDir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Spatialize")
@@ -47,6 +50,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defAddr, .main) { [weak self] _, _ in
             self?.scheduleRestart()
         }
+
+        // macOS makes AirPods the default input when they connect, which forces call mode.
+        var inAddr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                                mScope: kAudioObjectPropertyScopeGlobal,
+                                                mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &inAddr, .main) { [weak self] _, _ in
+            self?.enforceBuiltInMic()
+        }
+        enforceBuiltInMic()
+    }
+
+    private func enforceBuiltInMic() {
+        // The output's format changes when it leaves call mode, so rebuild the graph.
+        if useBuiltInMic, moveDefaultInputOffBluetooth() { scheduleRestart() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -153,6 +170,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         targets.submenu = sub
         menu.addItem(targets)
 
+        let mic = NSMenuItem(title: "Use Built-in Mic", action: #selector(toggleBuiltInMic), keyEquivalent: "")
+        mic.target = self
+        mic.state = useBuiltInMic ? .on : .off
+        menu.addItem(mic)
+
         let importItem = NSMenuItem(title: "Import IR File…", action: #selector(importIR), keyEquivalent: "")
         importItem.target = self
         menu.addItem(importItem)
@@ -192,6 +214,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             engine?.stop()
         }
+    }
+
+    @objc private func toggleBuiltInMic() {
+        useBuiltInMic.toggle()
+        enforceBuiltInMic()
     }
 
     @objc private func importIR() {

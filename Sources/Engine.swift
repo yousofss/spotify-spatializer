@@ -39,6 +39,28 @@ private func stringProp(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector
     return value?.takeRetainedValue() as String?
 }
 
+private func uint32Prop(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector) -> UInt32? {
+    var a = addr(sel), size = UInt32(MemoryLayout<UInt32>.size), value: UInt32 = 0
+    return AudioObjectGetPropertyData(obj, &a, 0, nil, &size, &value) == noErr ? value : nil
+}
+
+/// A Bluetooth mic as default input drops the headset into its mono, low-rate call profile
+/// (HFP). Moves the default input to the built-in mic; returns whether it did.
+@discardableResult
+func moveDefaultInputOffBluetooth() -> Bool {
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    let bluetooth = [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE]
+    guard let input = uint32Prop(system, kAudioHardwarePropertyDefaultInputDevice),
+          let transport = uint32Prop(input, kAudioDevicePropertyTransportType),
+          bluetooth.contains(transport),
+          var builtIn = objectIDs(system, kAudioHardwarePropertyDevices).first(where: {
+              uint32Prop($0, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBuiltIn
+                  && !objectIDs($0, kAudioDevicePropertyStreams, kAudioObjectPropertyScopeInput).isEmpty
+          }) else { return false }
+    var a = addr(kAudioHardwarePropertyDefaultInputDevice)
+    return AudioObjectSetPropertyData(system, &a, 0, nil, UInt32(MemoryLayout<AudioObjectID>.size), &builtIn) == noErr
+}
+
 private func streamFormat(_ dev: AudioObjectID, _ scope: AudioObjectPropertyScope) -> AudioStreamBasicDescription? {
     guard let stream = objectIDs(dev, kAudioDevicePropertyStreams, scope).first else { return nil }
     var a = addr(kAudioStreamPropertyVirtualFormat)
