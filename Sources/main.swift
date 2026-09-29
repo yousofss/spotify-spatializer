@@ -153,6 +153,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         menu.addItem(toggle)
 
+        let reset = NSMenuItem(title: "Reset Audio", action: #selector(resetAudio), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
+
         let targets = NSMenuItem(title: "Target Apps", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         let candidates = Set(Spatializer.runningAudioBundleIDs()).union(targetIDs)
@@ -219,6 +223,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             engine?.stop()
         }
+    }
+
+    @objc private func resetAudio() {
+        enforceBuiltInMic()
+        scheduleRestart()
     }
 
     @objc private func toggleBuiltInMic() {
