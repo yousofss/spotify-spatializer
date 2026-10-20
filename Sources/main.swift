@@ -2,12 +2,37 @@
 
 import AppKit
 import CoreAudio
+import ServiceManagement
 
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
     private var engine: Spatializer?
+    private var engineUID: String?  // output device the loaded IRs belong to
     private var engineError: String?
+    private var bypass = false {
+        didSet { engine?.bypass = bypass }
+    }
+    private var keepBalanceCentered = UserDefaults.standard.bool(forKey: "keepBalanceCentered") {
+        didSet {
+            UserDefaults.standard.set(keepBalanceCentered, forKey: "keepBalanceCentered")
+            if keepBalanceCentered { centerOutputBalance() }
+        }
+    }
+    private var watchedOutput = AudioObjectID(kAudioObjectUnknown)
+    // Leaving call mode changes the rate but keeps the device, so the default-output listener misses it.
+    private lazy var rateChanged: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        self?.scheduleRestart()
+    }
+    private var pendingCenter: DispatchWorkItem?
+    // A volume change writes the channels one at a time; centering in between would undo half of it.
+    private lazy var volumeChanged: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        guard let self, keepBalanceCentered else { return }
+        pendingCenter?.cancel()
+        let work = DispatchWorkItem { centerOutputBalance() }
+        pendingCenter = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
     private var enabled = true
     private var restartPending = false
     private var measuring = false
@@ -26,7 +51,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let supportDir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Spatialize")
-    private var irURL: URL { supportDir.appendingPathComponent("irs.bin") }
+    private var legacyIRURL: URL { supportDir.appendingPathComponent("irs.bin") }
+    private func irURL(_ uid: String) -> URL {
+        supportDir.appendingPathComponent("irs-\(uid.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? uid).bin")
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -49,8 +77,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                  mScope: kAudioObjectPropertyScopeGlobal,
                                                  mElement: kAudioObjectPropertyElementMain)
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defAddr, .main) { [weak self] _, _ in
+            self?.watchOutput()
             self?.scheduleRestart()
         }
+        watchOutput()
 
         // macOS makes AirPods the default input when they connect, which forces call mode.
         var inAddr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -61,7 +91,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         enforceBuiltInMic()
 
-        if engine == nil { measure() }
+        let measured = (try? FileManager.default.contentsOfDirectory(atPath: supportDir.path))?.isEmpty == false
+            || Bundle.main.url(forResource: "irs", withExtension: "bin") != nil
+        if !measured { measure() }
+    }
+
+    private func watchOutput() {
+        let rate = addr(kAudioDevicePropertyNominalSampleRate)
+        let volumes = [UInt32(1), 2].map {
+            AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                       mScope: kAudioDevicePropertyScopeOutput, mElement: $0)
+        }
+        if watchedOutput != kAudioObjectUnknown {
+            var r = rate
+            AudioObjectRemovePropertyListenerBlock(watchedOutput, &r, .main, rateChanged)
+            for var v in volumes { AudioObjectRemovePropertyListenerBlock(watchedOutput, &v, .main, volumeChanged) }
+        }
+        watchedOutput = OutputDevice.current?.id ?? AudioObjectID(kAudioObjectUnknown)
+        guard watchedOutput != kAudioObjectUnknown else { return }
+        var r = rate
+        AudioObjectAddPropertyListenerBlock(watchedOutput, &r, .main, rateChanged)
+        for var v in volumes { AudioObjectAddPropertyListenerBlock(watchedOutput, &v, .main, volumeChanged) }
+        if keepBalanceCentered { centerOutputBalance() }
     }
 
     private func enforceBuiltInMic() {
@@ -75,18 +126,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - engine lifecycle
 
+    /// Loads the IRs measured on the current output. Other outputs get no engine, so the
+    /// target apps play through them unprocessed.
     private func loadEngine() {
         engine?.stop()
         engine = nil
-        let url = FileManager.default.fileExists(atPath: irURL.path)
-            ? irURL
-            : Bundle.main.url(forResource: "irs", withExtension: "bin")
+        guard let output = OutputDevice.current else {
+            engineUID = nil
+            engineError = "No output device"
+            return
+        }
+        engineUID = output.uid
+        var url: URL? = irURL(output.uid)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url!.path), output.isBluetooth {
+            // IRs from before per-device files belong to the first headphones that show up.
+            if fm.fileExists(atPath: legacyIRURL.path) {
+                try? fm.moveItem(at: legacyIRURL, to: url!)
+            } else {
+                url = Bundle.main.url(forResource: "irs", withExtension: "bin")
+            }
+        }
         guard let url, let data = try? Data(contentsOf: url) else {
-            engineError = "Not measured yet"
+            engineError = "Not measured for \(output.name)"
             return
         }
         do {
             engine = try Spatializer(irData: data)
+            engine?.bypass = bypass
             engineError = nil
         } catch {
             engineError = error.localizedDescription
@@ -94,7 +161,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tryStart() {
-        guard enabled, !measuring, let engine, !engine.isRunning, !targetIDs.isEmpty else { return }
+        guard enabled, !measuring, !targetIDs.isEmpty else { return }
+        if OutputDevice.current?.uid != engineUID { loadEngine() }
+        guard let engine, !engine.isRunning else { return }
         do {
             try engine.start(bundleIDs: targetIDs)
             engineError = nil
@@ -153,6 +222,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         menu.addItem(toggle)
 
+        let bypassItem = NSMenuItem(title: "Bypass", action: #selector(toggleBypass), keyEquivalent: "")
+        bypassItem.target = self
+        bypassItem.state = bypass ? .on : .off
+        menu.addItem(bypassItem)
+
         let reset = NSMenuItem(title: "Reset Audio", action: #selector(resetAudio), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
@@ -184,11 +258,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mic.state = useBuiltInMic ? .on : .off
         menu.addItem(mic)
 
+        let balance = NSMenuItem(title: "Keep Balance Centered", action: #selector(toggleKeepBalanceCentered), keyEquivalent: "")
+        balance.target = self
+        balance.state = keepBalanceCentered ? .on : .off
+        menu.addItem(balance)
+
         let measureItem = NSMenuItem(title: "Measure Spatial Audio…", action: #selector(measure), keyEquivalent: "")
         measureItem.target = self
         menu.addItem(measureItem)
 
         menu.addItem(.separator())
+        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
         let quit = NSMenuItem(title: "Quit Spatialize", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
@@ -236,12 +319,37 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetAudio()
     }
 
+    @objc private func toggleBypass() {
+        bypass.toggle()
+    }
+
+    @objc private func toggleKeepBalanceCentered() {
+        keepBalanceCentered.toggle()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+        } catch {
+            showError("Launch at Login failed", error)
+        }
+        if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+    }
+
     @objc private func measure() {
         Task { @MainActor in await runMeasurement() }
     }
 
     @MainActor private func runMeasurement() async {
         guard !measuring else { return }
+        guard let output = OutputDevice.current else {
+            return showError("Measurement failed", SpatializerError(message: "No output device"))
+        }
         measuring = true
         engine?.stop()
         defer {
@@ -253,7 +361,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try await Task.detached { try writeSweepMovie(to: movie) }.value
         } catch {
-            return showMeasurementError(error)
+            return showError("Measurement failed", error)
         }
         // Playing makes Spatialize Stereo show up for this app in Control Center; the throwaway
         // tap raises the audio-capture permission prompt now instead of mid-measurement.
@@ -277,11 +385,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let off = try await recordPass(movie: movie, spatialize: false)
             let irs = try extractIR(fixed: fixed, off: off)
             try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-            try irs.write(to: irURL)
+            try irs.write(to: irURL(output.uid))
             loadEngine()
             NSSound(named: "Glass")?.play()  // the passes are silent, so mark the end
         } catch {
-            showMeasurementError(error)
+            showError("Measurement failed", error)
         }
     }
 
@@ -309,9 +417,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return panel
     }
 
-    private func showMeasurementError(_ error: Error) {
+    private func showError(_ title: String, _ error: Error) {
         let failed = NSAlert()
-        failed.messageText = "Measurement failed"
+        failed.messageText = title
         failed.informativeText = error.localizedDescription
         NSApp.activate()
         failed.runModal()

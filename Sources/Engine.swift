@@ -44,6 +44,22 @@ private func uint32Prop(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector
     return AudioObjectGetPropertyData(obj, &a, 0, nil, &size, &value) == noErr ? value : nil
 }
 
+struct OutputDevice {
+    let id: AudioObjectID
+    let uid: String
+    let name: String
+    let isBluetooth: Bool
+
+    static var current: OutputDevice? {
+        guard let id = uint32Prop(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice),
+              let uid = stringProp(id, kAudioDevicePropertyDeviceUID) else { return nil }
+        let transport = uint32Prop(id, kAudioDevicePropertyTransportType)
+        return OutputDevice(id: id, uid: uid, name: stringProp(id, kAudioObjectPropertyName) ?? uid,
+                            isBluetooth: transport == kAudioDeviceTransportTypeBluetooth
+                                || transport == kAudioDeviceTransportTypeBluetoothLE)
+    }
+}
+
 /// A Bluetooth mic as default input drops the headset into its mono, low-rate call profile
 /// (HFP). Moves the default input to the built-in mic; returns whether it did.
 @discardableResult
@@ -74,6 +90,8 @@ func centerOutputBalance() {
     for i in 0..<2 {
         guard AudioObjectGetPropertyData(output, &addrs[i], 0, nil, &size, &levels[i]) == noErr else { return }
     }
+    // Also stops the volume listener from looping on its own writes.
+    guard abs(levels[0] - levels[1]) > 0.0001 else { return }
     var mean = (levels[0] + levels[1]) / 2
     for i in 0..<2 { AudioObjectSetPropertyData(output, &addrs[i], 0, nil, size, &mean) }
 }
@@ -169,6 +187,7 @@ final class Spatializer {
     private(set) var tappedProcesses: [AudioObjectID] = []
     private(set) var deviceName = ""
     var isRunning: Bool { procID != nil }
+    var bypass = false
 
     static func audioProcesses(bundleIDs: [String]) -> [AudioObjectID] {
         objectIDs(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
@@ -309,6 +328,11 @@ final class Spatializer {
 
         inv(accRe[0], accIm[0], outBlockL)
         inv(accRe[1], accIm[1], outBlockR)
+        // The convolution still runs, so its history is current when bypass turns off.
+        if bypass {
+            memcpy(outBlockL, curL, B * 4)
+            memcpy(outBlockR, curR, B * 4)
+        }
         for i in 0..<B {
             outL[(outW + i) & fifoMask] = outBlockL[i]
             outR[(outW + i) & fifoMask] = outBlockR[i]

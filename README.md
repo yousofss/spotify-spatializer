@@ -41,6 +41,7 @@ The AirPods icon in the menu bar shows what's being spatialized. Spatialize foll
 changes and attaches to the target apps whenever they play. The menu has:
 
 - **Pause / Resume**
+- **Bypass**: plays the original sound without a restart, to compare.
 - **Reset Audio**: rebuilds the audio pipeline and centers the output balance if playback sounds
   off or leans to one side.
 - **Target Apps**: which apps to spatialize (Spotify by default). Skip apps that already get
@@ -48,7 +49,11 @@ changes and attaches to the target apps whenever they play. The menu has:
   processed twice.
 - **Use Built-in Mic** (on by default): keeps the Mac's microphone as the input, because using
   the AirPods mic drops them into low-quality call mode. Turn it off to take calls on the AirPods.
-- **Measure Spatial Audio…**
+- **Keep Balance Centered** (off by default): centers the balance each time macOS moves it.
+  This also undoes a balance you set in Sound settings.
+- **Measure Spatial Audio…**: measures the current output. Each pair of headphones keeps its own
+  measurement. Outputs that are not measured, like the Mac speakers, play unprocessed.
+- **Launch at Login**
 
 ## How it works
 
