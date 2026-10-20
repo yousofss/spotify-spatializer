@@ -41,7 +41,8 @@ The AirPods icon in the menu bar shows what's being spatialized. Spatialize foll
 changes and attaches to the target apps whenever they play. The menu has:
 
 - **Pause / Resume**
-- **Reset Audio**: rebuilds the audio pipeline if playback sounds off.
+- **Reset Audio**: rebuilds the audio pipeline and centers the output balance if playback sounds
+  off or leans to one side.
 - **Target Apps**: which apps to spatialize (Spotify by default). Skip apps that already get
   Apple's spatialization, like Apple Music or video in Safari and QuickTime, or they're
   processed twice.

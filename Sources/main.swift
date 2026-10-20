@@ -226,13 +226,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func resetAudio() {
+        centerOutputBalance()
         enforceBuiltInMic()
         scheduleRestart()
     }
 
     @objc private func toggleBuiltInMic() {
         useBuiltInMic.toggle()
-        enforceBuiltInMic()
+        resetAudio()
     }
 
     @objc private func measure() {

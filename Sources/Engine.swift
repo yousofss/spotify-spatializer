@@ -61,6 +61,23 @@ func moveDefaultInputOffBluetooth() -> Bool {
     return AudioObjectSetPropertyData(system, &a, 0, nil, UInt32(MemoryLayout<AudioObjectID>.size), &builtIn) == noErr
 }
 
+/// macOS drifts the balance of Bluetooth headphones over time, which no graph rebuild undoes.
+/// Sets both channel volumes of the default output to their mean.
+func centerOutputBalance() {
+    guard let output = uint32Prop(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice) else { return }
+    var addrs = [UInt32(1), 2].map {
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                   mScope: kAudioDevicePropertyScopeOutput, mElement: $0)
+    }
+    var size = UInt32(MemoryLayout<Float32>.size)
+    var levels: [Float32] = [0, 0]
+    for i in 0..<2 {
+        guard AudioObjectGetPropertyData(output, &addrs[i], 0, nil, &size, &levels[i]) == noErr else { return }
+    }
+    var mean = (levels[0] + levels[1]) / 2
+    for i in 0..<2 { AudioObjectSetPropertyData(output, &addrs[i], 0, nil, size, &mean) }
+}
+
 /// Private aggregate on the default output device with the tap as its input.
 func createTapAggregate(tap: UUID) throws -> (aggregate: AudioObjectID, output: AudioObjectID) {
     guard let output = uint32Prop(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice),
