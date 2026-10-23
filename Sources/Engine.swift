@@ -141,11 +141,11 @@ private let ioProc: AudioDeviceIOProc = { _, _, inputData, _, outputData, _, ref
 }
 
 final class Spatializer {
-    static let block = 512
+    static let block = 1024
     private let B = Spatializer.block
-    private let F = 1024
-    private let halfF = 512
-    private let log2F: vDSP_Length = 10
+    private let F = 2048
+    private let halfF = 1024
+    private let log2F: vDSP_Length = 11
 
     let irRate: Int
     let irLen: Int
@@ -184,10 +184,16 @@ final class Spatializer {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregate = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
+    private var ioRunning = false
     private(set) var tappedProcesses: [AudioObjectID] = []
     private(set) var deviceName = ""
     var isRunning: Bool { procID != nil }
     var bypass = false
+    // A running IOProc wakes the CPU ~100 times a second and keeps the output awake, so IO
+    // only runs while a target app plays. Until it starts, the tap lets their audio through.
+    private lazy var outputChanged: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        try? self?.updateIO()
+    }
 
     static func audioProcesses(bundleIDs: [String]) -> [AudioObjectID] {
         objectIDs(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
@@ -404,7 +410,28 @@ final class Spatializer {
                 throw SpatializerError(message: "output device is not float stereo")
             }
 
-            // Reset DSP state for a clean start
+            var pid: AudioDeviceIOProcID?
+            try check(AudioDeviceCreateIOProcID(aggregate, ioProc, Unmanaged.passUnretained(self).toOpaque(), &pid),
+                      "create IOProc")
+            procID = pid
+
+            tappedProcesses = processes
+            deviceName = stringProp(defaultOut, kAudioObjectPropertyName) ?? "output device"
+            // IsRunningOutput sends no notifications; IsRunning does, on both start and stop.
+            var runAddr = addr(kAudioProcessPropertyIsRunning)
+            for p in processes { AudioObjectAddPropertyListenerBlock(p, &runAddr, .main, outputChanged) }
+            try updateIO()
+        } catch {
+            stop()
+            throw error
+        }
+    }
+
+    private func updateIO() throws {
+        guard let procID else { return }
+        let playing = tappedProcesses.contains { uint32Prop($0, kAudioProcessPropertyIsRunningOutput) == 1 }
+        if playing, !ioRunning {
+            // Reset DSP state so no tail from before the pause plays
             memset(prevL, 0, B * 4); memset(prevR, 0, B * 4)
             for c in 0..<2 {
                 memset(xRe[c], 0, P * halfF * 4)
@@ -414,22 +441,17 @@ final class Spatializer {
             head = 0
             inW = 0; inRd = 0
             outW = B; outRd = 0  // one block of pre-roll silence
-
-            var pid: AudioDeviceIOProcID?
-            try check(AudioDeviceCreateIOProcID(aggregate, ioProc, Unmanaged.passUnretained(self).toOpaque(), &pid),
-                      "create IOProc")
-            procID = pid
-            try check(AudioDeviceStart(aggregate, pid), "start device")
-
-            tappedProcesses = processes
-            deviceName = stringProp(defaultOut, kAudioObjectPropertyName) ?? "output device"
-        } catch {
-            stop()
-            throw error
+            try check(AudioDeviceStart(aggregate, procID), "start device")
+            ioRunning = true
+        } else if !playing, ioRunning {
+            AudioDeviceStop(aggregate, procID)
+            ioRunning = false
         }
     }
 
     func stop() {
+        var runAddr = addr(kAudioProcessPropertyIsRunning)
+        for p in tappedProcesses { AudioObjectRemovePropertyListenerBlock(p, &runAddr, .main, outputChanged) }
         if aggregate != kAudioObjectUnknown {
             if let procID {
                 AudioDeviceStop(aggregate, procID)
@@ -437,6 +459,7 @@ final class Spatializer {
             }
             AudioHardwareDestroyAggregateDevice(aggregate)
         }
+        ioRunning = false
         if tapID != kAudioObjectUnknown {
             AudioHardwareDestroyProcessTap(tapID)
         }

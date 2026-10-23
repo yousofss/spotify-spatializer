@@ -63,7 +63,7 @@ changes and attaches to the target apps whenever they play. The menu has:
    R→R). They contain everything: the binaural room response, Apple's private tuning stages, and
    your personal profile.
 3. The menu bar app taps the target apps, mutes their direct output, convolves the audio with
-   those responses (partitioned FFT, ~11 ms latency), and plays the result.
+   those responses (partitioned FFT, ~21 ms latency), and plays the result.
 
 Because it's Apple's own processing, the result matches Apple's Fixed mode.
 
